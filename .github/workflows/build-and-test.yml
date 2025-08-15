@@ -1,0 +1,200 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  build-test:
+    name: Build and Test (Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        exclude:
+          # Exclude some combinations to reduce CI load
+          - os: windows-latest
+            python-version: '3.8'
+          - os: macos-latest
+            python-version: '3.8'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential g++
+    
+    - name: Install system dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        # macOS should have Xcode command line tools
+        xcode-select --install || true
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build setuptools wheel pytest
+        pip install -e .
+    
+    - name: Build package
+      run: |
+        python -m build
+    
+    - name: Run basic tests
+      run: |
+        python tests/test_quadtree_simple.py
+    
+    - name: Run comprehensive tests
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      run: |
+        python tests/run_comprehensive_tests.py
+    
+    - name: Upload test artifacts
+      if: always() && matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports
+        path: |
+          comprehensive_test_report.json
+          *.log
+        retention-days: 30
+
+  security-scan:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build setuptools wheel
+        pip install -e .
+    
+    - name: Run Trivy vulnerability scanner on filesystem
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-fs-results.sarif'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        exit-code: '0'  # Don't fail build, just report
+    
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+    
+    - name: Run security vulnerability tests
+      run: |
+        python tests/test_security_vulnerabilities.py
+    
+    - name: Generate security report
+      run: |
+        # Run the security scan script if available
+        if [ -f "scripts/security_scan.sh" ]; then
+          bash scripts/security_scan.sh --report-dir security-reports || true
+        fi
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          security-reports/
+          trivy-*.sarif
+          trivy-*.json
+        retention-days: 30
+
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Build test container
+      run: |
+        cat > Dockerfile.ci <<EOF
+        FROM python:3.11-slim
+        
+        # Install system dependencies
+        RUN apt-get update && apt-get install -y \\
+            build-essential \\
+            g++ \\
+            && rm -rf /var/lib/apt/lists/*
+        
+        # Copy source code
+        COPY . /app
+        WORKDIR /app
+        
+        # Install Python dependencies
+        RUN pip install --no-cache-dir build setuptools wheel
+        
+        # Build the package
+        RUN python -m build
+        
+        # Install the package
+        RUN pip install dist/*.whl
+        
+        CMD ["python", "-c", "import quadtree; print('QuadTree package loaded successfully')"]
+        EOF
+        docker build -f Dockerfile.ci -t quadtree-ci:latest .
+    
+    - name: Run Trivy vulnerability scanner on container
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'quadtree-ci:latest'
+        format: 'sarif'
+        output: 'trivy-container-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '0'  # Don't fail build
+    
+    - name: Upload container scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-container-results.sarif'
+    
+    - name: Clean up
+      if: always()
+      run: |
+        docker rmi quadtree-ci:latest || true
+        rm Dockerfile.ci || true

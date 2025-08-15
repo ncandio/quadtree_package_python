@@ -1,0 +1,24 @@
+# Trivy ignore file for QuadTree package
+# This file contains rules for suppressing specific vulnerability findings
+
+# Example: Ignore specific CVE if it's not applicable to this project
+# CVE-2023-12345
+
+# Ignore low severity vulnerabilities in development dependencies
+# (Remove this if you want to see all vulnerabilities)
+
+# Ignore vulnerabilities in test files (they're not deployed)
+tests/
+
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
+
+# Ignore temporary files
+*.tmp
+*.log
+
+# Add specific CVEs or vulnerability IDs that are false positives
+# or have been assessed as not applicable to your use case
+# Format: CVE-YYYY-NNNNN
