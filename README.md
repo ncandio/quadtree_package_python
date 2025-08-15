@@ -144,7 +144,7 @@ For detailed security information, see [SECURITY.md](SECURITY.md).
 
 ## Publishing to PyPI
 
-This package is ready for publication to the Python Package Index (PyPI). Follow these steps to publish:
+This package is ready for publication to the Python Package Index (PyPI). 
 
 ### Prerequisites
 ```bash
